@@ -73,12 +73,19 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [showWildPicker, setShowWildPicker] = useState<{ cardId: string } | null>(null);
   const [animatingCards, setAnimatingCards] = useState<AnimatingCard[]>([]);
+  const [isConnected, setIsConnected] = useState(socket.connected);
 
   const drawPileRef = useRef<HTMLDivElement>(null);
   const myHandRef = useRef<HTMLDivElement>(null);
   const playerRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
 
   useEffect(() => {
+    function onConnect() { setIsConnected(true); }
+    function onDisconnect() { setIsConnected(false); }
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+
     socket.on('room_state', (state) => {
       setGameState(prevState => {
         if (prevState) {
@@ -98,10 +105,12 @@ export default function App() {
 
     socket.on('error', (msg) => {
       setError(msg);
-      setTimeout(() => setError(null), 3000);
+      setTimeout(() => setError(null), 5000);
     });
 
     return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
       socket.off('room_state');
       socket.off('error');
     };
@@ -210,6 +219,12 @@ export default function App() {
               <span className="text-white font-black text-3xl">UNO</span>
             </div>
             <h1 className="text-3xl font-black text-gray-800 tracking-tight">Online Multiplayer</h1>
+            <div className="mt-2 flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                {isConnected ? 'Server Connected' : 'Server Disconnected'}
+              </span>
+            </div>
           </div>
 
           <div className="space-y-6">

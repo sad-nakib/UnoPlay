@@ -26,58 +26,53 @@ const PORT = 3000;
 // Helper to sync room to Supabase
 // Note: This assumes a 'rooms' table exists with columns: id (text, pk), state (jsonb)
 async function saveRoom(room: GameState) {
-  try {
-    const { error } = await supabase
-      .from('rooms')
-      .upsert({ id: room.roomId, state: room });
-    if (error) throw error;
-  } catch (e) {
-    console.error('Error saving room to Supabase:', JSON.stringify(e, null, 2));
+  const { error } = await supabase
+    .from('rooms')
+    .upsert({ id: room.roomId, state: room });
+  
+  if (error) {
+    console.error('Supabase Save Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Database error: ${error.message}`);
   }
 }
 
 async function getRoom(roomId: string): Promise<GameState | null> {
-  try {
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('state')
-      .eq('id', roomId.toUpperCase())
-      .single();
-    
-    if (error) {
-      if (error.code === 'PGRST116') return null; // Not found
-      throw error;
-    }
-    return data.state as GameState;
-  } catch (e) {
-    console.error('Error getting room from Supabase:', JSON.stringify(e, null, 2));
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('state')
+    .eq('id', roomId.toUpperCase())
+    .single();
+  
+  if (error) {
+    if (error.code === 'PGRST116') return null; // Not found
+    console.error('Supabase Get Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Database error: ${error.message}`);
   }
-  return null;
+  return data.state as GameState;
 }
 
 async function deleteRoom(roomId: string) {
-  try {
-    const { error } = await supabase
-      .from('rooms')
-      .delete()
-      .eq('id', roomId);
-    if (error) throw error;
-  } catch (e) {
-    console.error('Error deleting room from Supabase:', JSON.stringify(e, null, 2));
+  const { error } = await supabase
+    .from('rooms')
+    .delete()
+    .eq('id', roomId);
+  
+  if (error) {
+    console.error('Supabase Delete Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Database error: ${error.message}`);
   }
 }
 
 async function getAllRooms(): Promise<GameState[]> {
-  try {
-    const { data, error } = await supabase
-      .from('rooms')
-      .select('state');
-    if (error) throw error;
-    return (data || []).map(d => d.state as GameState);
-  } catch (e) {
-    console.error('Error getting all rooms from Supabase:', JSON.stringify(e, null, 2));
-    return [];
+  const { data, error } = await supabase
+    .from('rooms')
+    .select('state');
+  
+  if (error) {
+    console.error('Supabase GetAll Error:', JSON.stringify(error, null, 2));
+    throw new Error(`Database error: ${error.message}`);
   }
+  return (data || []).map(d => d.state as GameState);
 }
 
 function createDeck(): Card[] {
@@ -122,204 +117,224 @@ io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   socket.on('create_room', async (name) => {
-    const roomId = nanoid(6).toUpperCase();
-    const gameState: GameState = {
-      roomId,
-      players: [{ id: socket.id, name, hand: [], isReady: true }],
-      deck: createDeck(),
-      discardPile: [],
-      currentPlayerIndex: 0,
-      direction: 1,
-      status: 'lobby',
-      winner: null,
-      lastAction: `${name} created the room`,
-      currentEffect: 'none',
-      wildColor: null,
-    };
-    await saveRoom(gameState);
-    socket.join(roomId);
-    socket.emit('room_state', gameState);
+    try {
+      const roomId = nanoid(6).toUpperCase();
+      const gameState: GameState = {
+        roomId,
+        players: [{ id: socket.id, name, hand: [], isReady: true }],
+        deck: createDeck(),
+        discardPile: [],
+        currentPlayerIndex: 0,
+        direction: 1,
+        status: 'lobby',
+        winner: null,
+        lastAction: `${name} created the room`,
+        currentEffect: 'none',
+        wildColor: null,
+      };
+      await saveRoom(gameState);
+      socket.join(roomId);
+      socket.emit('room_state', gameState);
+    } catch (err: any) {
+      socket.emit('error', err.message || 'Failed to create room');
+    }
   });
 
   socket.on('join_room', async (roomId, name) => {
-    const room = await getRoom(roomId);
-    if (!room) {
-      socket.emit('error', 'Room not found');
-      return;
-    }
-    if (room.status !== 'lobby') {
-      socket.emit('error', 'Game already in progress');
-      return;
-    }
-    if (room.players.length >= 10) {
-      socket.emit('error', 'Room is full');
-      return;
-    }
+    try {
+      const room = await getRoom(roomId);
+      if (!room) {
+        socket.emit('error', 'Room not found');
+        return;
+      }
+      if (room.status !== 'lobby') {
+        socket.emit('error', 'Game already in progress');
+        return;
+      }
+      if (room.players.length >= 10) {
+        socket.emit('error', 'Room is full');
+        return;
+      }
 
-    room.players.push({ id: socket.id, name, hand: [], isReady: true });
-    room.lastAction = `${name} joined the room`;
-    await saveRoom(room);
-    socket.join(roomId.toUpperCase());
-    io.to(roomId.toUpperCase()).emit('room_state', room);
+      room.players.push({ id: socket.id, name, hand: [], isReady: true });
+      room.lastAction = `${name} joined the room`;
+      await saveRoom(room);
+      socket.join(roomId.toUpperCase());
+      io.to(roomId.toUpperCase()).emit('room_state', room);
+    } catch (err: any) {
+      socket.emit('error', err.message || 'Failed to join room');
+    }
   });
 
   socket.on('start_game', async () => {
-    const roomId = Array.from(socket.rooms).find(r => r.length === 6);
-    if (!roomId) return;
-    const room = await getRoom(roomId);
-    if (!room) return;
+    try {
+      const roomId = Array.from(socket.rooms).find(r => r.length === 6);
+      if (!roomId) return;
+      const room = await getRoom(roomId);
+      if (!room) return;
 
-    if (room.players.length < 2) {
-      socket.emit('error', 'Need at least 2 players to start');
-      return;
-    }
-
-    room.status = 'playing';
-    room.deck = createDeck();
-    room.discardPile = [];
-    
-    for (const player of room.players) {
-      player.hand = room.deck.splice(0, 7);
-    }
-
-    let initialCardIndex = room.deck.findIndex(c => c.value !== 'wild4');
-    const initialCard = room.deck.splice(initialCardIndex, 1)[0];
-    room.discardPile.push(initialCard);
-    
-    if (initialCard.value === 'skip') {
-      room.currentPlayerIndex = getNextPlayerIndex(0, room.direction, room.players.length);
-    } else if (initialCard.value === 'reverse') {
-      if (room.players.length === 2) {
-        room.currentPlayerIndex = getNextPlayerIndex(0, room.direction, room.players.length);
-      } else {
-        room.direction *= -1;
-        room.currentPlayerIndex = 0;
+      if (room.players.length < 2) {
+        socket.emit('error', 'Need at least 2 players to start');
+        return;
       }
-    } else if (initialCard.value === 'draw2') {
-      room.currentEffect = 'draw2';
-    } else if (initialCard.value === 'wild') {
-      room.wildColor = null;
-    }
 
-    room.lastAction = 'Game started!';
-    await saveRoom(room);
-    io.to(roomId).emit('room_state', room);
+      room.status = 'playing';
+      room.deck = createDeck();
+      room.discardPile = [];
+      
+      for (const player of room.players) {
+        player.hand = room.deck.splice(0, 7);
+      }
+
+      let initialCardIndex = room.deck.findIndex(c => c.value !== 'wild4');
+      const initialCard = room.deck.splice(initialCardIndex, 1)[0];
+      room.discardPile.push(initialCard);
+      
+      if (initialCard.value === 'skip') {
+        room.currentPlayerIndex = getNextPlayerIndex(0, room.direction, room.players.length);
+      } else if (initialCard.value === 'reverse') {
+        if (room.players.length === 2) {
+          room.currentPlayerIndex = getNextPlayerIndex(0, room.direction, room.players.length);
+        } else {
+          room.direction *= -1;
+          room.currentPlayerIndex = 0;
+        }
+      } else if (initialCard.value === 'draw2') {
+        room.currentEffect = 'draw2';
+      } else if (initialCard.value === 'wild') {
+        room.wildColor = null;
+      }
+
+      room.lastAction = 'Game started!';
+      await saveRoom(room);
+      io.to(roomId).emit('room_state', room);
+    } catch (err: any) {
+      socket.emit('error', err.message || 'Failed to start game');
+    }
   });
 
   socket.on('play_card', async (cardId, wildColor) => {
-    const roomId = Array.from(socket.rooms).find(r => r.length === 6);
-    if (!roomId) return;
-    const room = await getRoom(roomId);
-    if (!room) return;
+    try {
+      const roomId = Array.from(socket.rooms).find(r => r.length === 6);
+      if (!roomId) return;
+      const room = await getRoom(roomId);
+      if (!room) return;
 
-    const player = room.players[room.currentPlayerIndex];
-    if (player.id !== socket.id) {
-      socket.emit('error', 'Not your turn');
-      return;
-    }
+      const player = room.players[room.currentPlayerIndex];
+      if (player.id !== socket.id) {
+        socket.emit('error', 'Not your turn');
+        return;
+      }
 
-    const cardIndex = player.hand.findIndex(c => c.id === cardId);
-    if (cardIndex === -1) return;
-    const card = player.hand[cardIndex];
+      const cardIndex = player.hand.findIndex(c => c.id === cardId);
+      if (cardIndex === -1) return;
+      const card = player.hand[cardIndex];
 
-    const topCard = room.discardPile[room.discardPile.length - 1];
-    const currentColor = room.wildColor || topCard.color;
+      const topCard = room.discardPile[room.discardPile.length - 1];
+      const currentColor = room.wildColor || topCard.color;
 
-    let canPlay = false;
-    if (card.color === 'wild' || card.color === currentColor || card.value === topCard.value) {
-      canPlay = true;
-    }
+      let canPlay = false;
+      if (card.color === 'wild' || card.color === currentColor || card.value === topCard.value) {
+        canPlay = true;
+      }
 
-    if (!canPlay) {
-      socket.emit('error', 'Invalid move');
-      return;
-    }
+      if (!canPlay) {
+        socket.emit('error', 'Invalid move');
+        return;
+      }
 
-    player.hand.splice(cardIndex, 1);
-    room.discardPile.push(card);
-    room.wildColor = wildColor || null;
-    room.lastAction = `${player.name} played ${card.color} ${card.value}`;
+      player.hand.splice(cardIndex, 1);
+      room.discardPile.push(card);
+      room.wildColor = wildColor || null;
+      room.lastAction = `${player.name} played ${card.color} ${card.value}`;
 
-    if (player.hand.length === 0) {
-      room.status = 'ended';
-      room.winner = player.name;
+      if (player.hand.length === 0) {
+        room.status = 'ended';
+        room.winner = player.name;
+        await saveRoom(room);
+        io.to(roomId).emit('room_state', room);
+        return;
+      }
+
+      let skipNext = false;
+      if (card.value === 'skip') {
+        skipNext = true;
+      } else if (card.value === 'reverse') {
+        if (room.players.length === 2) {
+          skipNext = true;
+        } else {
+          room.direction *= -1;
+        }
+      } else if (card.value === 'draw2') {
+        room.currentEffect = 'draw2';
+      } else if (card.value === 'wild4') {
+        room.currentEffect = 'draw4';
+      }
+
+      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+      if (skipNext) {
+        room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+      }
+
+      if (room.currentEffect === 'draw2') {
+        const nextPlayer = room.players[room.currentPlayerIndex];
+        const drawn = room.deck.splice(0, 2);
+        nextPlayer.hand.push(...drawn);
+        room.currentEffect = 'none';
+        room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+        room.lastAction += `. ${nextPlayer.name} drew 2 cards and was skipped.`;
+      } else if (room.currentEffect === 'draw4') {
+        const nextPlayer = room.players[room.currentPlayerIndex];
+        const drawn = room.deck.splice(0, 4);
+        nextPlayer.hand.push(...drawn);
+        room.currentEffect = 'none';
+        room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+        room.lastAction += `. ${nextPlayer.name} drew 4 cards and was skipped.`;
+      }
+
+      if (room.deck.length < 10) {
+        const top = room.discardPile.pop()!;
+        room.deck.push(...shuffle(room.discardPile));
+        room.discardPile = [top];
+      }
+
       await saveRoom(room);
       io.to(roomId).emit('room_state', room);
-      return;
+    } catch (err: any) {
+      socket.emit('error', err.message || 'Failed to play card');
     }
-
-    let skipNext = false;
-    if (card.value === 'skip') {
-      skipNext = true;
-    } else if (card.value === 'reverse') {
-      if (room.players.length === 2) {
-        skipNext = true;
-      } else {
-        room.direction *= -1;
-      }
-    } else if (card.value === 'draw2') {
-      room.currentEffect = 'draw2';
-    } else if (card.value === 'wild4') {
-      room.currentEffect = 'draw4';
-    }
-
-    room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
-    if (skipNext) {
-      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
-    }
-
-    if (room.currentEffect === 'draw2') {
-      const nextPlayer = room.players[room.currentPlayerIndex];
-      const drawn = room.deck.splice(0, 2);
-      nextPlayer.hand.push(...drawn);
-      room.currentEffect = 'none';
-      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
-      room.lastAction += `. ${nextPlayer.name} drew 2 cards and was skipped.`;
-    } else if (room.currentEffect === 'draw4') {
-      const nextPlayer = room.players[room.currentPlayerIndex];
-      const drawn = room.deck.splice(0, 4);
-      nextPlayer.hand.push(...drawn);
-      room.currentEffect = 'none';
-      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
-      room.lastAction += `. ${nextPlayer.name} drew 4 cards and was skipped.`;
-    }
-
-    if (room.deck.length < 10) {
-      const top = room.discardPile.pop()!;
-      room.deck.push(...shuffle(room.discardPile));
-      room.discardPile = [top];
-    }
-
-    await saveRoom(room);
-    io.to(roomId).emit('room_state', room);
   });
 
   socket.on('draw_card', async () => {
-    const roomId = Array.from(socket.rooms).find(r => r.length === 6);
-    if (!roomId) return;
-    const room = await getRoom(roomId);
-    if (!room) return;
+    try {
+      const roomId = Array.from(socket.rooms).find(r => r.length === 6);
+      if (!roomId) return;
+      const room = await getRoom(roomId);
+      if (!room) return;
 
-    const player = room.players[room.currentPlayerIndex];
-    if (player.id !== socket.id) {
-      socket.emit('error', 'Not your turn');
-      return;
+      const player = room.players[room.currentPlayerIndex];
+      if (player.id !== socket.id) {
+        socket.emit('error', 'Not your turn');
+        return;
+      }
+
+      const drawn = room.deck.splice(0, 1)[0];
+      player.hand.push(drawn);
+      room.lastAction = `${player.name} drew a card`;
+
+      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+
+      if (room.deck.length < 10) {
+        const top = room.discardPile.pop()!;
+        room.deck.push(...shuffle(room.discardPile));
+        room.discardPile = [top];
+      }
+
+      await saveRoom(room);
+      io.to(roomId).emit('room_state', room);
+    } catch (err: any) {
+      socket.emit('error', err.message || 'Failed to draw card');
     }
-
-    const drawn = room.deck.splice(0, 1)[0];
-    player.hand.push(drawn);
-    room.lastAction = `${player.name} drew a card`;
-
-    room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
-
-    if (room.deck.length < 10) {
-      const top = room.discardPile.pop()!;
-      room.deck.push(...shuffle(room.discardPile));
-      room.discardPile = [top];
-    }
-
-    await saveRoom(room);
-    io.to(roomId).emit('room_state', room);
   });
 
   socket.on('leave_room', async () => {
