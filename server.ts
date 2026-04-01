@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -31,7 +32,7 @@ async function saveRoom(room: GameState) {
       .upsert({ id: room.roomId, state: room });
     if (error) throw error;
   } catch (e) {
-    console.error('Error saving room to Supabase:', e);
+    console.error('Error saving room to Supabase:', JSON.stringify(e, null, 2));
   }
 }
 
@@ -49,7 +50,7 @@ async function getRoom(roomId: string): Promise<GameState | null> {
     }
     return data.state as GameState;
   } catch (e) {
-    console.error('Error getting room from Supabase:', e);
+    console.error('Error getting room from Supabase:', JSON.stringify(e, null, 2));
   }
   return null;
 }
@@ -62,7 +63,7 @@ async function deleteRoom(roomId: string) {
       .eq('id', roomId);
     if (error) throw error;
   } catch (e) {
-    console.error('Error deleting room from Supabase:', e);
+    console.error('Error deleting room from Supabase:', JSON.stringify(e, null, 2));
   }
 }
 
@@ -74,7 +75,7 @@ async function getAllRooms(): Promise<GameState[]> {
     if (error) throw error;
     return (data || []).map(d => d.state as GameState);
   } catch (e) {
-    console.error('Error getting all rooms from Supabase:', e);
+    console.error('Error getting all rooms from Supabase:', JSON.stringify(e, null, 2));
     return [];
   }
 }

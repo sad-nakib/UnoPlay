@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
 import { Users, Play, LogOut, Plus, UserPlus, ArrowRight, Trophy, AlertCircle, RefreshCw } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { Card, Color, GameState, ServerToClientEvents, ClientToServerEvents } from './types';
+import { Card, Color, GameState, Player, ServerToClientEvents, ClientToServerEvents } from './types';
 
 const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io();
 
@@ -13,7 +13,8 @@ const UnoCard: React.FC<{
   disabled?: boolean; 
   isCurrent?: boolean;
   isBack?: boolean;
-}> = ({ card, onClick, disabled, isCurrent, isBack }) => {
+  className?: string;
+}> = ({ card, onClick, disabled, isCurrent, isBack, className }) => {
   const getColorClass = (color: Color) => {
     switch (color) {
       case 'red': return 'bg-red-500';
@@ -27,7 +28,7 @@ const UnoCard: React.FC<{
 
   if (isBack) {
     return (
-      <div className="w-20 h-32 bg-red-800 rounded-lg border-4 border-white flex items-center justify-center shadow-lg">
+      <div className={`w-20 h-32 bg-red-800 rounded-lg border-4 border-white flex items-center justify-center shadow-lg ${className || ''}`}>
         <div className="w-14 h-24 bg-red-900 rounded-md flex items-center justify-center">
           <span className="text-white font-bold text-xl rotate-45">UNO</span>
         </div>
@@ -40,7 +41,7 @@ const UnoCard: React.FC<{
       whileHover={!disabled ? { y: -10, scale: 1.05 } : {}}
       whileTap={!disabled ? { scale: 0.95 } : {}}
       onClick={!disabled ? onClick : undefined}
-      className={`relative w-20 h-32 ${getColorClass(card.color)} rounded-lg border-4 border-white flex flex-col items-center justify-center shadow-lg cursor-pointer transition-opacity ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${isCurrent ? 'ring-4 ring-yellow-300' : ''}`}
+      className={`relative w-20 h-32 ${getColorClass(card.color)} rounded-lg border-4 border-white flex flex-col items-center justify-center shadow-lg cursor-pointer transition-opacity ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${isCurrent ? 'ring-4 ring-yellow-300' : ''} ${className || ''}`}
     >
       <div className="absolute top-1 left-1 text-white font-bold text-xs">{card.value}</div>
       <div className="w-14 h-24 bg-white/20 rounded-full flex items-center justify-center">
@@ -58,16 +59,33 @@ const UnoCard: React.FC<{
   );
 };
 
+interface AnimatingCard {
+  id: string;
+  start: { x: number; y: number };
+  end: { x: number; y: number };
+}
+
 export default function App() {
   const [name, setName] = useState('');
   const [roomId, setRoomId] = useState('');
   const [gameState, setGameState] = useState<GameState | null>(null);
+  const [prevPlayers, setPrevPlayers] = useState<Player[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showWildPicker, setShowWildPicker] = useState<{ cardId: string } | null>(null);
+  const [animatingCards, setAnimatingCards] = useState<AnimatingCard[]>([]);
+
+  const drawPileRef = useRef<HTMLDivElement>(null);
+  const myHandRef = useRef<HTMLDivElement>(null);
+  const playerRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
 
   useEffect(() => {
     socket.on('room_state', (state) => {
-      setGameState(state);
+      setGameState(prevState => {
+        if (prevState) {
+          setPrevPlayers(prevState.players);
+        }
+        return state;
+      });
       setError(null);
       if (state.status === 'ended' && state.winner) {
         confetti({
@@ -88,6 +106,48 @@ export default function App() {
       socket.off('error');
     };
   }, []);
+
+  // Detect card draws and trigger animations
+  useEffect(() => {
+    if (!gameState || prevPlayers.length === 0) return;
+
+    const newAnimatingCards: AnimatingCard[] = [];
+    const drawPileRect = drawPileRef.current?.getBoundingClientRect();
+
+    if (!drawPileRect) return;
+
+    gameState.players.forEach(player => {
+      const prevPlayer = prevPlayers.find(p => p.id === player.id);
+      if (prevPlayer && player.hand.length > prevPlayer.hand.length) {
+        const diff = player.hand.length - prevPlayer.hand.length;
+        
+        let endRect: DOMRect | undefined;
+        if (player.id === socket.id) {
+          endRect = myHandRef.current?.getBoundingClientRect();
+        } else {
+          endRect = playerRefs.current[player.id]?.getBoundingClientRect();
+        }
+
+        if (endRect) {
+          for (let i = 0; i < diff; i++) {
+            newAnimatingCards.push({
+              id: `${player.id}-${Date.now()}-${i}`,
+              start: { x: drawPileRect.left, y: drawPileRect.top },
+              end: { x: endRect.left + (endRect.width / 2) - 40, y: endRect.top + (endRect.height / 2) - 64 }
+            });
+          }
+        }
+      }
+    });
+
+    if (newAnimatingCards.length > 0) {
+      setAnimatingCards(prev => [...prev, ...newAnimatingCards]);
+      // Clear animations after a delay
+      setTimeout(() => {
+        setAnimatingCards(prev => prev.filter(c => !newAnimatingCards.find(nc => nc.id === c.id)));
+      }, 800);
+    }
+  }, [gameState, prevPlayers]);
 
   const handleCreateRoom = () => {
     if (!name) return setError('Please enter your name');
@@ -125,6 +185,7 @@ export default function App() {
   const handleLeaveRoom = () => {
     socket.emit('leave_room');
     setGameState(null);
+    setPrevPlayers([]);
   };
 
   const currentPlayer = useMemo(() => {
@@ -323,6 +384,7 @@ export default function App() {
             return (
               <motion.div 
                 key={p.id}
+                ref={el => playerRefs.current[p.id] = el}
                 animate={isHisTurn ? { scale: 1.1 } : { scale: 1 }}
                 className={`flex flex-col items-center p-3 rounded-2xl transition-all ${isHisTurn ? 'bg-white/20 ring-2 ring-yellow-400' : 'bg-black/10'}`}
               >
@@ -345,6 +407,7 @@ export default function App() {
           {/* Draw Pile */}
           <div className="flex flex-col items-center gap-2">
             <div 
+              ref={drawPileRef}
               onClick={isMyTurn ? handleDrawCard : undefined}
               className={`cursor-pointer transition-transform hover:scale-105 active:scale-95 ${!isMyTurn ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
@@ -393,7 +456,10 @@ export default function App() {
           )}
         </div>
         
-        <div className="flex justify-center -space-x-8 hover:space-x-2 transition-all duration-300 max-w-full overflow-x-auto px-12 py-4 scrollbar-hide">
+        <div 
+          ref={myHandRef}
+          className="flex justify-center -space-x-8 hover:space-x-2 transition-all duration-300 max-w-full overflow-x-auto px-12 py-4 scrollbar-hide"
+        >
           {currentPlayer?.hand.map((card) => {
             const canPlay = isMyTurn && (card.color === 'wild' || card.color === currentColor || card.value === topCard.value);
             return (
@@ -406,6 +472,24 @@ export default function App() {
             );
           })}
         </div>
+      </div>
+
+      {/* Animating Cards Overlay */}
+      <div className="fixed inset-0 pointer-events-none z-50">
+        <AnimatePresence>
+          {animatingCards.map((anim) => (
+            <motion.div
+              key={anim.id}
+              initial={{ x: anim.start.x, y: anim.start.y, scale: 1, opacity: 1 }}
+              animate={{ x: anim.end.x, y: anim.end.y, scale: 0.6, opacity: 0.8 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.6, ease: "easeInOut" }}
+              className="absolute"
+            >
+              <UnoCard card={{} as Card} isBack />
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
 
       {/* Wild Color Picker Modal */}
