@@ -18,23 +18,29 @@ const UnoCard: React.FC<{
   isCurrent?: boolean;
   isBack?: boolean;
   className?: string;
-}> = ({ card, onClick, disabled, isCurrent, isBack, className }) => {
+  index?: number;
+  total?: number;
+}> = ({ card, onClick, disabled, isCurrent, isBack, className, index = 0, total = 1 }) => {
   const getColorClass = (color: Color) => {
     switch (color) {
       case 'red': return 'bg-red-500';
       case 'blue': return 'bg-blue-500';
       case 'green': return 'bg-green-500';
       case 'yellow': return 'bg-yellow-500';
-      case 'wild': return 'bg-gray-800';
+      case 'wild': return 'bg-gray-900';
       default: return 'bg-gray-400';
     }
   };
 
+  // Calculate fan effect
+  const rotation = total > 1 ? (index - (total - 1) / 2) * (total > 10 ? 2 : 4) : 0;
+  const translateY = total > 1 ? Math.abs(index - (total - 1) / 2) * 2 : 0;
+
   if (isBack) {
     return (
-      <div className={`w-20 h-32 bg-red-800 rounded-lg border-4 border-white flex items-center justify-center shadow-lg ${className || ''}`}>
-        <div className="w-14 h-24 bg-red-900 rounded-md flex items-center justify-center">
-          <span className="text-white font-bold text-xl rotate-45">UNO</span>
+      <div className={`w-20 h-32 bg-red-800 rounded-xl border-4 border-white flex items-center justify-center shadow-xl ${className || ''}`}>
+        <div className="w-14 h-24 bg-red-900 rounded-lg flex items-center justify-center border-2 border-white/10">
+          <span className="text-white font-black text-xl rotate-45 tracking-tighter">UNO</span>
         </div>
       </div>
     );
@@ -42,14 +48,30 @@ const UnoCard: React.FC<{
 
   return (
     <motion.div
-      whileHover={!disabled ? { y: -10, scale: 1.05 } : {}}
+      layout
+      initial={{ scale: 0.8, opacity: 0, y: 20 }}
+      animate={{ 
+        scale: 1, 
+        opacity: 1, 
+        y: 0,
+        rotate: rotation,
+        translateY: translateY
+      }}
+      whileHover={!disabled ? { 
+        y: -20, 
+        scale: 1.1, 
+        zIndex: 50,
+        rotate: 0,
+        transition: { duration: 0.2 }
+      } : {}}
       whileTap={!disabled ? { scale: 0.95 } : {}}
       onClick={!disabled ? onClick : undefined}
-      className={`relative w-20 h-32 ${getColorClass(card.color)} rounded-lg border-4 border-white flex flex-col items-center justify-center shadow-lg cursor-pointer transition-opacity ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${isCurrent ? 'ring-4 ring-yellow-300' : ''} ${className || ''}`}
+      className={`relative w-20 h-32 ${getColorClass(card.color)} rounded-xl border-4 border-white flex flex-col items-center justify-center shadow-xl cursor-pointer transition-opacity ${disabled ? 'opacity-40 grayscale-[0.2] cursor-not-allowed' : 'z-10'} ${isCurrent ? 'ring-4 ring-yellow-300' : ''} ${className || ''}`}
+      style={{ transformOrigin: 'bottom center' }}
     >
-      <div className="absolute top-1 left-1 text-white font-bold text-xs">{card.value}</div>
-      <div className="w-14 h-24 bg-white/20 rounded-full flex items-center justify-center">
-        <span className="text-white font-bold text-2xl drop-shadow-md">
+      <div className="absolute top-1.5 left-1.5 text-white font-black text-sm leading-none">{card.value}</div>
+      <div className="w-14 h-24 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-[1px] border border-white/10">
+        <span className="text-white font-black text-3xl drop-shadow-lg select-none">
           {card.value === 'skip' && '⊘'}
           {card.value === 'reverse' && '⇄'}
           {card.value === 'draw2' && '+2'}
@@ -58,7 +80,7 @@ const UnoCard: React.FC<{
           {parseInt(card.value) >= 0 && card.value}
         </span>
       </div>
-      <div className="absolute bottom-1 right-1 text-white font-bold text-xs rotate-180">{card.value}</div>
+      <div className="absolute bottom-1.5 right-1.5 text-white font-black text-sm leading-none rotate-180">{card.value}</div>
     </motion.div>
   );
 };
@@ -648,9 +670,9 @@ export default function App() {
         
         <div 
           ref={myHandRef}
-          className="flex justify-center -space-x-8 hover:space-x-2 transition-all duration-300 max-w-full overflow-x-auto px-12 py-4 scrollbar-hide"
+          className="flex justify-center -space-x-10 hover:-space-x-2 transition-all duration-500 max-w-full overflow-x-auto px-12 py-8 scrollbar-hide"
         >
-          {currentPlayer?.hand.map((card) => {
+          {currentPlayer?.hand.map((card, index) => {
             const canPlay = isMyTurn && (card.color === 'wild' || card.color === currentColor || card.value === topCard.value);
             return (
               <UnoCard 
@@ -658,21 +680,23 @@ export default function App() {
                 card={card} 
                 onClick={() => handlePlayCard(card)}
                 disabled={!canPlay}
+                index={index}
+                total={currentPlayer.hand.length}
               />
             );
           })}
         </div>
       </div>
 
-      <div className="fixed inset-0 pointer-events-none z-50">
+      <div className="fixed inset-0 pointer-events-none z-[100]">
         <AnimatePresence>
           {animatingCards.map((anim) => (
             <motion.div
               key={anim.id}
-              initial={{ x: anim.start.x, y: anim.start.y, scale: 1, opacity: 1 }}
-              animate={{ x: anim.end.x, y: anim.end.y, scale: 0.6, opacity: 0.8 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.6, ease: "easeInOut" }}
+              initial={{ x: anim.start.x, y: anim.start.y, scale: 1, opacity: 1, rotate: 0 }}
+              animate={{ x: anim.end.x, y: anim.end.y, scale: 1, opacity: 1, rotate: 360 }}
+              exit={{ opacity: 0, scale: 0.5 }}
+              transition={{ duration: 0.7, ease: [0.23, 1, 0.32, 1] }}
               className="absolute"
             >
               <UnoCard card={{} as Card} isBack />
