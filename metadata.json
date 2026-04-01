@@ -1,0 +1,5 @@
+{
+  "name": "UNO Online",
+  "description": "A real-time multiplayer UNO game where you can create rooms and play with friends.",
+  "requestFramePermissions": []
+}
