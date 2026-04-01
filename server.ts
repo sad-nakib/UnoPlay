@@ -4,9 +4,7 @@ import { Server } from 'socket.io';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { nanoid } from 'nanoid';
-import { initializeApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, getDoc, deleteDoc, collection, getDocs } from 'firebase/firestore';
-import firebaseConfig from './firebase-applet-config.json';
+import { createClient } from '@supabase/supabase-js';
 import { Card, Color, Value, GameState, Player, ServerToClientEvents, ClientToServerEvents } from './src/types.ts';
 
 const app = express();
@@ -17,37 +15,67 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
   },
 });
 
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+// Supabase Configuration
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://kinejwtucyljtnzvhthd.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_0JTFjluiQJOImQFwYa04Cw_tdMLTGYy';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const PORT = 3000;
 
-// Helper to sync room to Firestore
+// Helper to sync room to Supabase
+// Note: This assumes a 'rooms' table exists with columns: id (text, pk), state (jsonb)
 async function saveRoom(room: GameState) {
   try {
-    await setDoc(doc(db, 'rooms', room.roomId), room);
+    const { error } = await supabase
+      .from('rooms')
+      .upsert({ id: room.roomId, state: room });
+    if (error) throw error;
   } catch (e) {
-    console.error('Error saving room to Firestore:', e);
+    console.error('Error saving room to Supabase:', e);
   }
 }
 
 async function getRoom(roomId: string): Promise<GameState | null> {
   try {
-    const docSnap = await getDoc(doc(db, 'rooms', roomId.toUpperCase()));
-    if (docSnap.exists()) {
-      return docSnap.data() as GameState;
+    const { data, error } = await supabase
+      .from('rooms')
+      .select('state')
+      .eq('id', roomId.toUpperCase())
+      .single();
+    
+    if (error) {
+      if (error.code === 'PGRST116') return null; // Not found
+      throw error;
     }
+    return data.state as GameState;
   } catch (e) {
-    console.error('Error getting room from Firestore:', e);
+    console.error('Error getting room from Supabase:', e);
   }
   return null;
 }
 
 async function deleteRoom(roomId: string) {
   try {
-    await deleteDoc(doc(db, 'rooms', roomId));
+    const { error } = await supabase
+      .from('rooms')
+      .delete()
+      .eq('id', roomId);
+    if (error) throw error;
   } catch (e) {
-    console.error('Error deleting room from Firestore:', e);
+    console.error('Error deleting room from Supabase:', e);
+  }
+}
+
+async function getAllRooms(): Promise<GameState[]> {
+  try {
+    const { data, error } = await supabase
+      .from('rooms')
+      .select('state');
+    if (error) throw error;
+    return (data || []).map(d => d.state as GameState);
+  } catch (e) {
+    console.error('Error getting all rooms from Supabase:', e);
+    return [];
   }
 }
 
@@ -317,9 +345,8 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', async () => {
     console.log('User disconnected:', socket.id);
-    const roomsSnap = await getDocs(collection(db, 'rooms'));
-    for (const doc of roomsSnap.docs) {
-      const room = doc.data() as GameState;
+    const rooms = await getAllRooms();
+    for (const room of rooms) {
       const playerIndex = room.players.findIndex(p => p.id === socket.id);
       if (playerIndex !== -1) {
         room.players.splice(playerIndex, 1);
