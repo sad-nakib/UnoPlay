@@ -1,11 +1,15 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { io, Socket } from 'socket.io-client';
 import { motion, AnimatePresence } from 'motion/react';
 import { Users, Play, LogOut, Plus, UserPlus, ArrowRight, Trophy, AlertCircle, RefreshCw } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { Card, Color, GameState, Player, ServerToClientEvents, ClientToServerEvents } from './types';
+import { createClient, RealtimeChannel } from '@supabase/supabase-js';
+import { Card, Color, GameState, Player, Value } from './types';
+import { nanoid } from 'nanoid';
 
-const socket: Socket<ServerToClientEvents, ClientToServerEvents> = io();
+// Supabase Configuration
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://kinejwtucyljtnzvhthd.supabase.co';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_0JTFjluiQJOImQFwYa04Cw_tdMLTGYy';
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const UnoCard: React.FC<{ 
   card: Card; 
@@ -65,6 +69,43 @@ interface AnimatingCard {
   end: { x: number; y: number };
 }
 
+// Game Logic Helpers
+function createDeck(): Card[] {
+  const deck: Card[] = [];
+  const colors: Color[] = ['red', 'blue', 'green', 'yellow'];
+  const values: Value[] = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'skip', 'reverse', 'draw2'];
+
+  for (const color of colors) {
+    for (const value of values) {
+      const count = value === '0' ? 1 : 2;
+      for (let i = 0; i < count; i++) {
+        deck.push({ id: nanoid(), color, value });
+      }
+    }
+  }
+  for (let i = 0; i < 4; i++) {
+    deck.push({ id: nanoid(), color: 'wild', value: 'wild' });
+    deck.push({ id: nanoid(), color: 'wild', value: 'wild4' });
+  }
+  return shuffle(deck);
+}
+
+function shuffle<T>(array: T[]): T[] {
+  const newArray = [...array];
+  for (let i = newArray.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [newArray[i], newArray[j]] = [newArray[j], newArray[i]];
+  }
+  return newArray;
+}
+
+function getNextPlayerIndex(currentIndex: number, direction: 1 | -1, playerCount: number): number {
+  let nextIndex = currentIndex + direction;
+  if (nextIndex >= playerCount) nextIndex = 0;
+  if (nextIndex < 0) nextIndex = playerCount - 1;
+  return nextIndex;
+}
+
 export default function App() {
   const [name, setName] = useState('');
   const [roomId, setRoomId] = useState('');
@@ -73,50 +114,57 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [showWildPicker, setShowWildPicker] = useState<{ cardId: string } | null>(null);
   const [animatingCards, setAnimatingCards] = useState<AnimatingCard[]>([]);
-  const [isConnected, setIsConnected] = useState(socket.connected);
+  const [isConnected, setIsConnected] = useState(false);
+  const [myId] = useState(() => nanoid());
 
+  const channelRef = useRef<RealtimeChannel | null>(null);
   const drawPileRef = useRef<HTMLDivElement>(null);
   const myHandRef = useRef<HTMLDivElement>(null);
   const playerRefs = useRef<{ [key: string]: HTMLDivElement | null }>({});
 
-  useEffect(() => {
-    function onConnect() { setIsConnected(true); }
-    function onDisconnect() { setIsConnected(false); }
-
-    socket.on('connect', onConnect);
-    socket.on('disconnect', onDisconnect);
-
-    socket.on('room_state', (state) => {
-      setGameState(prevState => {
-        if (prevState) {
-          setPrevPlayers(prevState.players);
-        }
-        return state;
+  const syncState = async (newState: GameState) => {
+    setGameState(newState);
+    const { error } = await supabase
+      .from('rooms')
+      .upsert({ id: newState.roomId, state: newState });
+    
+    if (error) {
+      console.error('Sync Error:', error);
+      setError('Failed to sync game state');
+    } else {
+      channelRef.current?.send({
+        type: 'broadcast',
+        event: 'state_update',
+        payload: newState
       });
-      setError(null);
-      if (state.status === 'ended' && state.winner) {
-        confetti({
-          particleCount: 150,
-          spread: 70,
-          origin: { y: 0.6 }
-        });
-      }
+    }
+  };
+
+  useEffect(() => {
+    if (!gameState?.roomId) return;
+
+    const channel = supabase.channel(`room:${gameState.roomId}`, {
+      config: { broadcast: { self: false } }
     });
 
-    socket.on('error', (msg) => {
-      setError(msg);
-      setTimeout(() => setError(null), 5000);
-    });
+    channel
+      .on('broadcast', { event: 'state_update' }, ({ payload }) => {
+        setGameState(prevState => {
+          if (prevState) setPrevPlayers(prevState.players);
+          return payload;
+        });
+      })
+      .subscribe((status) => {
+        setIsConnected(status === 'SUBSCRIBED');
+      });
+
+    channelRef.current = channel;
 
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('room_state');
-      socket.off('error');
+      channel.unsubscribe();
     };
-  }, []);
+  }, [gameState?.roomId]);
 
-  // Detect card draws and trigger animations
   useEffect(() => {
     if (!gameState || prevPlayers.length === 0) return;
 
@@ -131,7 +179,7 @@ export default function App() {
         const diff = player.hand.length - prevPlayer.hand.length;
         
         let endRect: DOMRect | undefined;
-        if (player.id === socket.id) {
+        if (player.id === myId) {
           endRect = myHandRef.current?.getBoundingClientRect();
         } else {
           endRect = playerRefs.current[player.id]?.getBoundingClientRect();
@@ -151,60 +199,195 @@ export default function App() {
 
     if (newAnimatingCards.length > 0) {
       setAnimatingCards(prev => [...prev, ...newAnimatingCards]);
-      // Clear animations after a delay
       setTimeout(() => {
         setAnimatingCards(prev => prev.filter(c => !newAnimatingCards.find(nc => nc.id === c.id)));
       }, 800);
     }
-  }, [gameState, prevPlayers]);
+  }, [gameState, prevPlayers, myId]);
 
-  const handleCreateRoom = () => {
+  const handleCreateRoom = async () => {
     if (!name) return setError('Please enter your name');
-    socket.emit('create_room', name);
+    const newRoomId = nanoid(6).toUpperCase();
+    const initialState: GameState = {
+      roomId: newRoomId,
+      players: [{ id: myId, name, hand: [], isReady: true }],
+      deck: createDeck(),
+      discardPile: [],
+      currentPlayerIndex: 0,
+      direction: 1,
+      status: 'lobby',
+      winner: null,
+      lastAction: `${name} created the room`,
+      currentEffect: 'none',
+      wildColor: null,
+    };
+    await syncState(initialState);
   };
 
-  const handleJoinRoom = () => {
+  const handleJoinRoom = async () => {
     if (!name || !roomId) return setError('Please enter name and room ID');
-    socket.emit('join_room', roomId, name);
+    const { data, error } = await supabase
+      .from('rooms')
+      .select('state')
+      .eq('id', roomId.toUpperCase())
+      .single();
+
+    if (error || !data) return setError('Room not found');
+    const room = data.state as GameState;
+
+    if (room.status !== 'lobby') return setError('Game already in progress');
+    if (room.players.length >= 10) return setError('Room is full');
+
+    room.players.push({ id: myId, name, hand: [], isReady: true });
+    room.lastAction = `${name} joined the room`;
+    await syncState(room);
   };
 
-  const handleStartGame = () => {
-    socket.emit('start_game');
+  const handleStartGame = async () => {
+    if (!gameState) return;
+    if (gameState.players.length < 2) return setError('Need at least 2 players');
+
+    const room = { ...gameState };
+    room.status = 'playing';
+    room.deck = createDeck();
+    room.discardPile = [];
+    
+    for (const player of room.players) {
+      player.hand = room.deck.splice(0, 7);
+    }
+
+    let initialCardIndex = room.deck.findIndex(c => c.value !== 'wild4');
+    const initialCard = room.deck.splice(initialCardIndex, 1)[0];
+    room.discardPile.push(initialCard);
+    
+    if (initialCard.value === 'skip') {
+      room.currentPlayerIndex = getNextPlayerIndex(0, room.direction, room.players.length);
+    } else if (initialCard.value === 'reverse') {
+      if (room.players.length === 2) {
+        room.currentPlayerIndex = getNextPlayerIndex(0, room.direction, room.players.length);
+      } else {
+        room.direction *= -1;
+        room.currentPlayerIndex = 0;
+      }
+    } else if (initialCard.value === 'draw2') {
+      room.currentEffect = 'draw2';
+    }
+
+    room.lastAction = 'Game started!';
+    await syncState(room);
   };
 
-  const handlePlayCard = (card: Card) => {
+  const handlePlayCard = async (card: Card) => {
+    if (!gameState) return;
     if (card.color === 'wild') {
       setShowWildPicker({ cardId: card.id });
     } else {
-      socket.emit('play_card', card.id);
+      executePlayCard(card.id);
     }
+  };
+
+  const executePlayCard = async (cardId: string, wildColor?: Color) => {
+    if (!gameState) return;
+    const room = { ...gameState };
+    const player = room.players[room.currentPlayerIndex];
+    if (player.id !== myId) return setError('Not your turn');
+
+    const cardIndex = player.hand.findIndex(c => c.id === cardId);
+    if (cardIndex === -1) return;
+    const card = player.hand[cardIndex];
+
+    const topCard = room.discardPile[room.discardPile.length - 1];
+    const currentColor = room.wildColor || topCard.color;
+
+    if (card.color !== 'wild' && card.color !== currentColor && card.value !== topCard.value) {
+      return setError('Invalid move');
+    }
+
+    player.hand.splice(cardIndex, 1);
+    room.discardPile.push(card);
+    room.wildColor = wildColor || null;
+    room.lastAction = `${player.name} played ${card.color} ${card.value}`;
+
+    if (player.hand.length === 0) {
+      room.status = 'ended';
+      room.winner = player.name;
+      await syncState(room);
+      return;
+    }
+
+    let skipNext = false;
+    if (card.value === 'skip') skipNext = true;
+    else if (card.value === 'reverse') {
+      if (room.players.length === 2) skipNext = true;
+      else room.direction *= -1;
+    } else if (card.value === 'draw2') room.currentEffect = 'draw2';
+    else if (card.value === 'wild4') room.currentEffect = 'draw4';
+
+    room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+    if (skipNext) room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+
+    if (room.currentEffect === 'draw2') {
+      const nextPlayer = room.players[room.currentPlayerIndex];
+      nextPlayer.hand.push(...room.deck.splice(0, 2));
+      room.currentEffect = 'none';
+      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+      room.lastAction += `. ${nextPlayer.name} drew 2 and was skipped.`;
+    } else if (room.currentEffect === 'draw4') {
+      const nextPlayer = room.players[room.currentPlayerIndex];
+      nextPlayer.hand.push(...room.deck.splice(0, 4));
+      room.currentEffect = 'none';
+      room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+      room.lastAction += `. ${nextPlayer.name} drew 4 and was skipped.`;
+    }
+
+    if (room.deck.length < 10) {
+      const top = room.discardPile.pop()!;
+      room.deck.push(...shuffle(room.discardPile));
+      room.discardPile = [top];
+    }
+
+    await syncState(room);
   };
 
   const handleWildPick = (color: Color) => {
     if (showWildPicker) {
-      socket.emit('play_card', showWildPicker.cardId, color);
+      executePlayCard(showWildPicker.cardId, color);
       setShowWildPicker(null);
     }
   };
 
-  const handleDrawCard = () => {
-    socket.emit('draw_card');
+  const handleDrawCard = async () => {
+    if (!gameState) return;
+    const room = { ...gameState };
+    const player = room.players[room.currentPlayerIndex];
+    if (player.id !== myId) return setError('Not your turn');
+
+    player.hand.push(room.deck.splice(0, 1)[0]);
+    room.lastAction = `${player.name} drew a card`;
+    room.currentPlayerIndex = getNextPlayerIndex(room.currentPlayerIndex, room.direction, room.players.length);
+
+    if (room.deck.length < 10) {
+      const top = room.discardPile.pop()!;
+      room.deck.push(...shuffle(room.discardPile));
+      room.discardPile = [top];
+    }
+
+    await syncState(room);
   };
 
   const handleLeaveRoom = () => {
-    socket.emit('leave_room');
     setGameState(null);
     setPrevPlayers([]);
   };
 
   const currentPlayer = useMemo(() => {
-    return gameState?.players.find(p => p.id === socket.id);
-  }, [gameState]);
+    return gameState?.players.find(p => p.id === myId);
+  }, [gameState, myId]);
 
   const isMyTurn = useMemo(() => {
     if (!gameState) return false;
-    return gameState.players[gameState.currentPlayerIndex].id === socket.id;
-  }, [gameState]);
+    return gameState.players[gameState.currentPlayerIndex].id === myId;
+  }, [gameState, myId]);
 
   if (!gameState) {
     return (
@@ -220,9 +403,9 @@ export default function App() {
             </div>
             <h1 className="text-3xl font-black text-gray-800 tracking-tight">Online Multiplayer</h1>
             <div className="mt-2 flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+              <div className={`w-2 h-2 rounded-full bg-green-500 animate-pulse`} />
               <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                {isConnected ? 'Server Connected' : 'Server Disconnected'}
+                Supabase Realtime Ready
               </span>
             </div>
           </div>
@@ -305,7 +488,7 @@ export default function App() {
                 <div className="w-10 h-10 bg-gradient-to-br from-red-500 to-red-600 rounded-full flex items-center justify-center text-white font-bold mr-4">
                   {p.name[0].toUpperCase()}
                 </div>
-                <span className="font-bold text-gray-700 flex-grow">{p.name} {p.id === socket.id && '(You)'}</span>
+                <span className="font-bold text-gray-700 flex-grow">{p.name} {p.id === myId && '(You)'}</span>
                 {p.isReady && <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-md uppercase">Ready</span>}
               </div>
             ))}
@@ -373,7 +556,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-green-800 text-white p-4 flex flex-col overflow-hidden font-sans">
-      {/* Header */}
       <div className="flex justify-between items-center mb-4 bg-black/20 p-3 rounded-2xl backdrop-blur-sm">
         <div className="flex items-center">
           <div className="bg-red-600 px-3 py-1 rounded-lg font-black text-sm mr-3 shadow-md">UNO</div>
@@ -390,11 +572,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Game Area */}
       <div className="flex-grow relative flex flex-col items-center justify-center">
-        {/* Other Players */}
         <div className="absolute top-0 w-full flex justify-center gap-8 p-4">
-          {gameState.players.filter(p => p.id !== socket.id).map((p, idx) => {
+          {gameState.players.filter(p => p.id !== myId).map((p) => {
             const isHisTurn = gameState.players[gameState.currentPlayerIndex].id === p.id;
             return (
               <motion.div 
@@ -417,9 +597,7 @@ export default function App() {
           })}
         </div>
 
-        {/* Center Table */}
         <div className="flex items-center gap-12">
-          {/* Draw Pile */}
           <div className="flex flex-col items-center gap-2">
             <div 
               ref={drawPileRef}
@@ -431,7 +609,6 @@ export default function App() {
             <span className="text-xs font-black text-white/50 uppercase tracking-widest">Draw Pile</span>
           </div>
 
-          {/* Discard Pile */}
           <div className="relative flex flex-col items-center gap-2">
             <AnimatePresence mode="wait">
               <motion.div
@@ -454,13 +631,11 @@ export default function App() {
           </div>
         </div>
 
-        {/* Current Action Message */}
         <div className="mt-8 bg-black/30 px-6 py-2 rounded-full backdrop-blur-md border border-white/10">
           <p className="text-sm font-bold text-yellow-400">{gameState.lastAction}</p>
         </div>
       </div>
 
-      {/* My Hand */}
       <div className="h-48 flex flex-col items-center justify-end pb-4">
         <div className="mb-4 flex items-center gap-2">
           <span className={`px-4 py-1 rounded-full text-xs font-black uppercase tracking-widest ${isMyTurn ? 'bg-yellow-400 text-black animate-pulse' : 'bg-white/10 text-white/50'}`}>
@@ -489,7 +664,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Animating Cards Overlay */}
       <div className="fixed inset-0 pointer-events-none z-50">
         <AnimatePresence>
           {animatingCards.map((anim) => (
@@ -507,7 +681,6 @@ export default function App() {
         </AnimatePresence>
       </div>
 
-      {/* Wild Color Picker Modal */}
       <AnimatePresence>
         {showWildPicker && (
           <motion.div 
