@@ -115,7 +115,18 @@ export default function App() {
   const [showWildPicker, setShowWildPicker] = useState<{ cardId: string } | null>(null);
   const [animatingCards, setAnimatingCards] = useState<AnimatingCard[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [myId] = useState(() => nanoid());
+  const [myId] = useState(() => {
+    const saved = localStorage.getItem('uno_player_id');
+    if (saved) return saved;
+    const newId = nanoid();
+    localStorage.setItem('uno_player_id', newId);
+    return newId;
+  });
+  const gameStateRef = useRef<GameState | null>(null);
+
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  }, [gameState]);
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const drawPileRef = useRef<HTMLDivElement>(null);
@@ -160,10 +171,28 @@ export default function App() {
 
     channelRef.current = channel;
 
+    const handleUnload = () => {
+      const currentGameState = gameStateRef.current;
+      if (currentGameState) {
+        const room = { ...currentGameState };
+        const player = room.players.find(p => p.id === myId);
+        if (player) {
+          player.isOnline = false;
+          // We use a synchronous-like approach or navigator.sendBeacon if needed, 
+          // but for Supabase we can try a quick update.
+          // Note: This is best-effort.
+          supabase.from('rooms').upsert({ id: room.roomId, state: room }).then();
+        }
+      }
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+
     return () => {
+      window.removeEventListener('beforeunload', handleUnload);
       channel.unsubscribe();
     };
-  }, [gameState?.roomId]);
+  }, [gameState?.roomId, myId]);
 
   useEffect(() => {
     if (!gameState || prevPlayers.length === 0) return;
@@ -210,7 +239,7 @@ export default function App() {
     const newRoomId = nanoid(6).toUpperCase();
     const initialState: GameState = {
       roomId: newRoomId,
-      players: [{ id: myId, name, hand: [], isReady: true }],
+      players: [{ id: myId, name, hand: [], isReady: true, isOnline: true }],
       deck: createDeck(),
       discardPile: [],
       currentPlayerIndex: 0,
@@ -235,11 +264,21 @@ export default function App() {
     if (error || !data) return setError('Room not found');
     const room = data.state as GameState;
 
-    if (room.status !== 'lobby') return setError('Game already in progress');
-    if (room.players.length >= 10) return setError('Room is full');
+    const isReturning = room.players.some(p => p.id === myId || p.name === name);
+    if (room.status !== 'lobby' && !isReturning) return setError('Game already in progress');
+    if (room.players.length >= 10 && !isReturning) return setError('Room is full');
 
-    room.players.push({ id: myId, name, hand: [], isReady: true });
-    room.lastAction = `${name} joined the room`;
+    const existingPlayer = room.players.find(p => p.id === myId || p.name === name);
+    if (existingPlayer) {
+      if (existingPlayer.isOnline && existingPlayer.id !== myId) return setError('Name already taken and online');
+      existingPlayer.id = myId;
+      existingPlayer.name = name;
+      existingPlayer.isOnline = true;
+      room.lastAction = `${name} returned to the room`;
+    } else {
+      room.players.push({ id: myId, name, hand: [], isReady: true, isOnline: true });
+      room.lastAction = `${name} joined the room`;
+    }
     await syncState(room);
   };
 
@@ -254,6 +293,7 @@ export default function App() {
     
     for (const player of room.players) {
       player.hand = room.deck.splice(0, 7);
+      player.isOnline = true; // Ensure all are online when starting
     }
 
     let initialCardIndex = room.deck.findIndex(c => c.value !== 'wild4');
@@ -375,7 +415,22 @@ export default function App() {
     await syncState(room);
   };
 
-  const handleLeaveRoom = () => {
+  const handleLeaveRoom = async () => {
+    if (gameState) {
+      const room = { ...gameState };
+      const player = room.players.find(p => p.id === myId);
+      if (player) {
+        player.isOnline = false;
+        room.lastAction = `${player.name} went offline`;
+        
+        const anyOnline = room.players.some(p => p.isOnline);
+        if (!anyOnline) {
+          await supabase.from('rooms').delete().eq('id', room.roomId);
+        } else {
+          await syncState(room);
+        }
+      }
+    }
     setGameState(null);
     setPrevPlayers([]);
   };
@@ -488,7 +543,10 @@ export default function App() {
                 <div className="w-10 h-10 bg-gradient-to-br from-red-500 to-red-600 rounded-full flex items-center justify-center text-white font-bold mr-4">
                   {p.name[0].toUpperCase()}
                 </div>
-                <span className="font-bold text-gray-700 flex-grow">{p.name} {p.id === myId && '(You)'}</span>
+                <div className="flex flex-col flex-grow">
+                  <span className="font-bold text-gray-700">{p.name} {p.id === myId && '(You)'}</span>
+                  {!p.isOnline && <span className="text-[10px] text-red-500 font-bold uppercase">Offline</span>}
+                </div>
                 {p.isReady && <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-1 rounded-md uppercase">Ready</span>}
               </div>
             ))}
@@ -584,14 +642,19 @@ export default function App() {
                 className={`flex flex-col items-center p-3 rounded-2xl transition-all ${isHisTurn ? 'bg-white/20 ring-2 ring-yellow-400' : 'bg-black/10'}`}
               >
                 <div className="relative mb-2">
-                  <div className="w-12 h-12 bg-gray-700 rounded-full flex items-center justify-center font-bold border-2 border-white/20">
+                  <div className={`w-12 h-12 bg-gray-700 rounded-full flex items-center justify-center font-bold border-2 ${p.isOnline ? 'border-white/20' : 'border-red-500 opacity-50'}`}>
                     {p.name[0].toUpperCase()}
                   </div>
+                  {!p.isOnline && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 rounded-full">
+                      <span className="text-[8px] font-black text-white uppercase">Offline</span>
+                    </div>
+                  )}
                   <div className="absolute -bottom-1 -right-1 bg-red-600 text-[10px] font-black px-1.5 py-0.5 rounded-md shadow-sm">
                     {p.hand.length}
                   </div>
                 </div>
-                <span className="text-xs font-bold truncate max-w-[80px]">{p.name}</span>
+                <span className={`text-xs font-bold truncate max-w-[80px] ${p.isOnline ? '' : 'text-white/40'}`}>{p.name}</span>
               </motion.div>
             );
           })}

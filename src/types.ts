@@ -12,6 +12,7 @@ export interface Player {
   name: string;
   hand: Card[];
   isReady: boolean;
+  isOnline: boolean;
 }
 
 export interface GameState {
