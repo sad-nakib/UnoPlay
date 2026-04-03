@@ -517,6 +517,11 @@ export default function App() {
               </motion.div>
             )}
           </div>
+          <div className="mt-8 pt-4 border-t border-gray-100 text-center">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+              Made by <span className="text-red-500">Sadman Nakib</span>
+            </p>
+          </div>
         </motion.div>
       </div>
     );
@@ -578,6 +583,11 @@ export default function App() {
               Start Game
             </button>
           </div>
+          <div className="mt-8 pt-4 border-t border-gray-100 text-center">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+              Made by <span className="text-red-500">Sadman Nakib</span>
+            </p>
+          </div>
         </div>
       </div>
     );
@@ -604,6 +614,11 @@ export default function App() {
           >
             Return to Lobby
           </button>
+          <div className="mt-8 pt-4 border-t border-gray-100 text-center">
+            <p className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+              Made by <span className="text-red-500">Sadman Nakib</span>
+            </p>
+          </div>
         </motion.div>
       </div>
     );
@@ -778,6 +793,13 @@ export default function App() {
           </motion.div>
         )}
       </AnimatePresence>
+      
+      {/* Small Credit Overlay */}
+      <div className="fixed bottom-2 right-4 pointer-events-none opacity-30 hover:opacity-100 transition-opacity">
+        <p className="text-[8px] font-black text-white uppercase tracking-[0.2em]">
+          Made by Sadman Nakib
+        </p>
+      </div>
     </div>
   );
 }
